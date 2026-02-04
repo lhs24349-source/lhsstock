@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 from src.data_manager import DataManager
 from src.ai_analyst import AIAnalyst
+from src.scheduler import get_scheduler
 
 # Page Config
 st.set_page_config(
@@ -12,6 +13,15 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Initialize Scheduler (Singleton)
+@st.cache_resource
+def init_scheduler():
+    scheduler = get_scheduler()
+    scheduler.start()
+    return scheduler
+
+scheduler = init_scheduler()
 
 # Initialize Managers
 # Removed cache to ensure secrets are re-read if added later
@@ -39,6 +49,15 @@ st.markdown("""
         margin-bottom: 10px;
     }
     .stButton>button { width: 100%; }
+    
+    /* Mobile Optimization */
+    @media only screen and (max-width: 600px) {
+        .big-font { font-size: 20px !important; }
+        h1 { font-size: 24px !important; }
+        h2 { font-size: 20px !important; }
+        h3 { font-size: 18px !important; }
+        .stMarkdown p { font-size: 16px !important; }
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -52,7 +71,7 @@ def main_dashboard():
     stats = dm.load_stats()
     
     st.title("📈 AI 주식 투자 가이드")
-    st.markdown(f"**총 방문자 수: {stats.get('visitors', 0):,}명**")
+    st.caption(f"총 방문자 수: {stats.get('visitors', 0):,}명 | 자동 업데이트 중 (5분 주기)")
     
     # 1. Daily Report Section
     st.header("📢 오늘의 시장 브리핑")
@@ -90,7 +109,7 @@ def main_dashboard():
                 hover_data={"reason": True, "tickers_display": True, "size_display": False, "score": False, "sector": False},
                 text="sector",
                 size_max=60,
-                height=400
+                height=450 # Slightly taller for legend
             )
             
             fig.update_traces(
@@ -100,9 +119,17 @@ def main_dashboard():
             
             fig.update_layout(
                 showlegend=True,
-                xaxis={'visible': False}, # Hide X axis labels as they are just names
-                yaxis={'title': '영향력 (Impact Score)', 'range': [0, 12]},
-                plot_bgcolor='rgba(0,0,0,0)'
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                ),
+                xaxis={'visible': False}, # Hide X axis labels
+                yaxis={'title': '영향력', 'visible': False}, # Hide Y axis too for cleaner look on mobile
+                plot_bgcolor='rgba(0,0,0,0)',
+                margin=dict(l=10, r=10, t=30, b=10) # Reduce margins
             )
             
             st.plotly_chart(fig, use_container_width=True)
@@ -112,7 +139,7 @@ def main_dashboard():
             st.markdown(report['content'])
             st.caption(f"생성 시간: {report['timestamp']}")
     else:
-        st.info("아직 생성된 리포트가 없습니다. 관리자 메뉴에서 생성을 요청하세요.")
+        st.info("아직 생성된 리포트가 없습니다. 잠시 후 자동으로 생성됩니다.")
 
     st.divider()
 
@@ -150,38 +177,24 @@ def main_dashboard():
 def admin_dashboard():
     st.title("🛠 관리자 대시보드")
     
-    st.subheader("1. 뉴스 및 AI 분석 제어")
-    col1, col2 = st.columns(2)
+    st.subheader("1. 시스템 상태")
+    col_status, col_lastrun, col_nextrun = st.columns(3)
     
-    with col1:
-        if st.button("🔄 뉴스 수집 실행 (RSS Fetch)"):
-            with st.spinner("뉴스 수집 중..."):
-                count = dm.fetch_and_update_news()
-            st.success(f"{count}개의 새로운 뉴스를 수집했습니다!")
-            time.sleep(1)
-            st.rerun()
-            
-    with col2:
-        if st.button("🤖 AI 리포트 생성 (Gemini)"):
-            if not ai or not ai.client:
-                st.error("API Key가 설정되지 않았습니다.")
-            else:
-                with st.spinner("AI 분석 중... (약 10-20초 소요)"):
-                    news = dm.load_news()
-                    if not news:
-                        st.error("분석할 뉴스가 없습니다. 먼저 뉴스를 수집하세요.")
-                    else:
-                        analysis_text = ai.analyze_news(news)
-                        if "오류" in analysis_text:
-                            st.error(analysis_text)
-                        else:
-                            dm_ai_saved = ai.save_report(analysis_text)
-                            if dm_ai_saved:
-                                st.success("리포트 생성 및 저장 완료!")
-                            else:
-                                st.error("저장 실패")
-                time.sleep(1)
-                st.rerun()
+    with col_status:
+        st.metric("백그라운드 작업", scheduler.status)
+        
+    with col_lastrun:
+        last = scheduler.last_run.strftime('%H:%M:%S') if scheduler.last_run else "없음"
+        st.metric("최근 실행", last)
+        
+    with col_nextrun:
+        next_r = scheduler.next_run.strftime('%H:%M:%S') if scheduler.next_run else "대기 중"
+        st.metric("다음 실행 예정", next_r)
+
+    st.info("뉴스 수집 및 AI 리포트 생성은 백그라운드에서 5분 주기로 자동 실행됩니다.")
+    
+    if st.button("새로고침 (상태 확인)"):
+        st.rerun()
 
     st.divider()
     

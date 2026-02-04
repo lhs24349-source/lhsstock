@@ -4,14 +4,16 @@ from datetime import datetime
 from google import genai
 from google.genai import types
 import streamlit as st
+import time
 
 class AIAnalyst:
     def __init__(self, api_key):
         self.client = genai.Client(api_key=api_key)
         self.model = "gemini-2.0-flash" 
 
-    def _generate_persona_analysis(self, persona_role, persona_prompt, news_text):
-        """Helper to generate analysis from a specific persona perspective"""
+    def _generate_persona_analysis(self, persona_role, persona_prompt, news_text, verbose=True):
+        """Helper to generate analysis from a specific persona perspective with retry logic"""
+        
         current_date_str = datetime.now().strftime('%Y-%m-%d')
         
         full_prompt = f"""
@@ -28,16 +30,32 @@ class AIAnalyst:
         **출력:**
         핵심 내용을 불렛 포인트로 간결하게 정리해주세요.
         """
-        try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=full_prompt
-            )
-            return response.text
-        except Exception as e:
-            return f"Error ({persona_role}): {str(e)}"
+        
+        max_retries = 3
+        base_delay = 2 # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=full_prompt
+                )
+                return response.text
+            except Exception as e:
+                error_msg = str(e)
+                if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                    if attempt < max_retries - 1:
+                        sleep_time = base_delay * (2 ** attempt) # 2s, 4s, 8s
+                        if verbose:
+                            st.write(f"⏳ 사용량이 많아 대기 중입니다... ({sleep_time}초)")
+                        else:
+                            print(f"⏳ 사용량이 많아 대기 중입니다... ({sleep_time}초)")
+                        time.sleep(sleep_time)
+                        continue
+                return f"Error ({persona_role}): {error_msg}"
+        return f"Error ({persona_role}): Rate limit exceeded after retries."
 
-    def analyze_news(self, news_items):
+    def analyze_news(self, news_items, verbose=True):
         if not news_items:
             return "분석할 뉴스가 없습니다."
 
@@ -49,7 +67,19 @@ class AIAnalyst:
             news_text += f"{i+1}. [{item['source']}] {item['title']}\n"
 
         # 2. Multi-Persona Analysis Phase
-        with st.status("🕵️ AI 전문가들이 분석 중입니다...", expanded=True) as status:
+        # Helper to handle status updates depending on verbose mode
+        class DummyStatus:
+            def __enter__(self): return self
+            def __exit__(self, exc_type, exc_val, exc_tb): pass
+            def write(self, text): 
+                if verbose: st.write(text)
+                else: print(text)
+            def update(self, label, state, expanded): pass
+
+        # Context manager for status
+        status_ctx = st.status("🕵️ AI 전문가들이 분석 중입니다...", expanded=True) if verbose else DummyStatus()
+
+        with status_ctx as status:
             
             # Persona A: Macro Economist
             status.write("🌍 거시경제 전문가가 시장 흐름을 읽고 있습니다...")
@@ -58,7 +88,7 @@ class AIAnalyst:
             - 이러한 이슈가 한국 금융 시장 전반에 미칠 영향을 예측하세요.
             - 단기적인 시장 분위기(Bull/Bear)를 진단하세요.
             """
-            macro_analysis = self._generate_persona_analysis("거시경제 분석가", macro_prompt, news_text)
+            macro_analysis = self._generate_persona_analysis("거시경제 분석가", macro_prompt, news_text, verbose)
             
             # Persona B: Sector Specialist
             status.write("🏭 산업 분석가가 수혜/피해 업종을 선별 중입니다...")
@@ -67,7 +97,7 @@ class AIAnalyst:
             - 각 이슈에 따른 수혜 업종과 악재 업종을 명확히 구분하세요.
             - 구체적인 종목명(Ticker)이 있다면 포함하세요.
             """
-            sector_analysis = self._generate_persona_analysis("산업/섹터 전문 애널리스트", sector_prompt, news_text)
+            sector_analysis = self._generate_persona_analysis("산업/섹터 전문 애널리스트", sector_prompt, news_text, verbose)
 
             # Persona C: Risk Manager
             status.write("⚠️ 리스크 관리자가 위험 요소를 점검 중입니다...")
@@ -76,7 +106,7 @@ class AIAnalyst:
             - '묻지마 투자'를 경계할 수 있도록 구체적인 리스크 시나리오를 제시하세요.
             - 현재 시장에서 '관망'이 필요한 섹터가 있다면 경고하세요.
             """
-            risk_analysis = self._generate_persona_analysis("리스크 관리자", risk_prompt, news_text)
+            risk_analysis = self._generate_persona_analysis("리스크 관리자", risk_prompt, news_text, verbose)
 
             # 3. Synthesis Phase
             status.write("📝 수석 전략가가 최종 리포트를 작성 중입니다...")
@@ -153,7 +183,8 @@ class AIAnalyst:
                     contents=final_prompt
                 )
                 final_report = response.text
-                status.update(label="✅ 분석 완료!", state="complete", expanded=False)
+                if verbose:
+                    status.update(label="✅ 분석 완료!", state="complete", expanded=False)
                 return final_report
             except Exception as e:
                 return f"Final Synthesis Error: {str(e)}"
