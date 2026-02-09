@@ -1,14 +1,17 @@
 import json
 import os
-import feedparser
 import pandas as pd
 from datetime import datetime
 import time
+
+# 크롤링 모듈 import (RSS 피드 대신 직접 크롤링 사용)
+from src.news_crawler import NewsCrawler
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
 FEEDS_FILE = os.path.join(DATA_DIR, 'feeds.json')
 NEWS_FILE = os.path.join(DATA_DIR, 'news.json')
 STATS_FILE = os.path.join(DATA_DIR, 'stats.json')
+
 
 class DataManager:
     def __init__(self):
@@ -47,60 +50,40 @@ class DataManager:
         return True
 
     def fetch_and_update_news(self):
-        from dateutil import parser as date_parser
-        
-        feeds = self.get_feeds()
+        """
+        크롤링을 통해 뉴스를 수집하고 업데이트합니다.
+        기존 RSS 피드 방식 대신 직접 웹페이지 크롤링을 사용합니다.
+        """
         existing_news = self.load_news()
         existing_links = {item['link'] for item in existing_news}
         
-        new_items = []
-        for feed in feeds:
-            try:
-                parsed = feedparser.parse(feed['url'])
-                if not parsed.entries:
-                    print(f"Warning: No entries for {feed['name']}")
-                    continue
-                    
-                for entry in parsed.entries:
-                    if entry.link not in existing_links:
-                        # Attempt to parse date
-                        raw_date = entry.get('published', datetime.now().isoformat())
-                        try:
-                            dt = date_parser.parse(raw_date)
-                            # Convert to naive or UTC to avoid mixing offset-aware/naive
-                            published_iso = dt.isoformat()
-                        except:
-                            published_iso = datetime.now().isoformat()
-                        
-                        item = {
-                            'title': entry.title,
-                            'link': entry.link,
-                            'summary': entry.get('summary', ''),
-                            'published': published_iso,
-                            'source': feed['name'],
-                            'category': feed['category'],
-                            'fetched_at': datetime.now().isoformat()
-                        }
-                        new_items.append(item)
-                        existing_links.add(entry.link)
-            except Exception as e:
-                print(f"Error fetching {feed['url']}: {e}")
+        # 크롤러를 사용하여 뉴스 수집
+        crawler = NewsCrawler()
+        crawled_news = crawler.fetch_all_news(max_per_source=30)
         
-        # Combine
+        # 기존에 없는 새 뉴스만 필터링
+        new_items = []
+        for item in crawled_news:
+            if item['link'] not in existing_links:
+                new_items.append(item)
+                existing_links.add(item['link'])
+        
+        # 새 뉴스와 기존 뉴스 합치기
         all_news = new_items + existing_news
         
-        # Sort by 'published' date descending
+        # 발행일 기준 내림차순 정렬
         try:
-            all_news.sort(key=lambda x: x.get('published', ''), reverse=True)
+            all_news.sort(key=lambda x: x.get('fetched_at', ''), reverse=True)
         except:
-             pass # Fallback if sorting fails
-             
-        # Keep only last 30 days or max 1000 items
+            pass  # 정렬 실패시 그대로 유지
+        
+        # 최대 1000개 뉴스만 유지
         all_news = all_news[:1000]
         
         with open(NEWS_FILE, 'w', encoding='utf-8') as f:
             json.dump(all_news, f, indent=4, ensure_ascii=False)
         
+        print(f"뉴스 업데이트 완료: 새로운 뉴스 {len(new_items)}개 추가됨")
         return len(new_items)
 
     def load_news(self):

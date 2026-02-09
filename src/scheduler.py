@@ -22,7 +22,7 @@ class BackgroundScheduler:
             return
             
         self._initialized = True
-        self.interval = 300  # 5 minutes (300 seconds)
+        self.interval = 600  # 10 minutes (600 seconds)
         self.is_running = False
         self.thread = None
         self.last_run = None
